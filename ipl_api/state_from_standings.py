@@ -1,18 +1,17 @@
 # ipl_api/state_from_standings.py
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 import os
 import re
 
 from ipl_api.nrr_math import TeamAggregate
 from ipl_api.points_table import TeamRow
 
-BALLS_PER_MATCH = 120
 DEBUG_STATE_BUILD = os.getenv("IPL_DEBUG_STATE_BUILD", "0") == "1"
 
 # Accept codes like: GG, UPW, RCB-W, DC-W, MI-W etc.
-_CODE_RE = re.compile(r"^[A-Z]{2,5}(?:-[A-Z])?$")
+_CODE_RE = re.compile(r"^[A-Z]{2,6}(?:-[A-Z])?$")
 
 
 def normalize_team_code(team_raw: str) -> str:
@@ -30,18 +29,16 @@ def normalize_team_code(team_raw: str) -> str:
         return ""
 
     # Remove leading digits (rank)
-    s = re.sub(r"^\d+", "", s).strip()
+    s = re.sub(r"^\d+\s*", "", s).strip()
     s = re.sub(r"\s+", " ", s).strip()
 
-    # Try trailing token as code
     tokens = s.split()
     if tokens:
         last = tokens[-1].strip().upper()
         if _CODE_RE.fullmatch(last):
             return last
 
-    # Try regex at end
-    m = re.search(r"([A-Z]{2,5}(?:-[A-Z])?)\s*$", s)
+    m = re.search(r"([A-Z]{2,6}(?:-[A-Z])?)\s*$", s)
     if m:
         code = m.group(1).upper()
         if _CODE_RE.fullmatch(code):
@@ -62,6 +59,18 @@ def _safe_int(x: object, default: int = 0) -> int:
         return default
 
 
+def _to_int_or_none(x: object) -> Optional[int]:
+    if x is None:
+        return None
+    try:
+        sx = str(x).strip()
+        if not sx or sx.lower() == "nan":
+            return None
+        return int(float(sx))
+    except Exception:
+        return None
+
+
 def build_state_from_standings(standings: dict) -> Dict[str, TeamRow]:
     """
     Convert ESPN standings JSON -> internal state (WPL-only).
@@ -69,8 +78,8 @@ def build_state_from_standings(standings: dict) -> Dict[str, TeamRow]:
     Rules:
       - Prefer `code` from ESPN scraper if present.
       - Else derive code from team display string.
-      - Prefer true aggregates (runs/balls for & against) if present.
-      - Fallback to approximate reconstruction ONLY if aggregates missing.
+      - STRICT: Require true aggregates (runs/balls for & against) once matches > 0.
+        Do NOT reconstruct aggregates from NRR (NRR is not enough information).
     """
     state: Dict[str, TeamRow] = {}
     teams = standings.get("teams", []) or []
@@ -91,54 +100,49 @@ def build_state_from_standings(standings: dict) -> Dict[str, TeamRow]:
         tied = _safe_int(t.get("tied", 0), 0)
         points = _safe_int(t.get("points", 0), 0)
 
-        runs_for = t.get("runs_for")
-        balls_for = t.get("balls_for")
-        runs_against = t.get("runs_against")
-        balls_against = t.get("balls_against")
+        rf = _to_int_or_none(t.get("runs_for"))
+        bf = _to_int_or_none(t.get("balls_for"))
+        ra = _to_int_or_none(t.get("runs_against"))
+        ba = _to_int_or_none(t.get("balls_against"))
 
         if DEBUG_STATE_BUILD:
             print(
                 "[STATE_BUILD]",
                 "team_code=", team_code,
                 "raw_team=", raw_team,
-                "rf/bf=", runs_for, balls_for,
-                "ra/ba=", runs_against, balls_against,
+                "matches=", matches,
+                "rf/bf=", rf, bf,
+                "ra/ba=", ra, ba,
                 "nrr=", t.get("nrr"),
             )
 
-        # Prefer real aggregates if available
-        if all(v is not None for v in [runs_for, balls_for, runs_against, balls_against]):
+        # Pre-season / no matches: allow missing aggregates and set zeros.
+        if matches == 0:
             agg = TeamAggregate(
                 team=team_code,
-                runs_for=int(runs_for),
-                balls_for=int(balls_for),
-                runs_against=int(runs_against),
-                balls_against=int(balls_against),
+                runs_for=rf or 0,
+                balls_for=bf or 0,
+                runs_against=ra or 0,
+                balls_against=ba or 0,
             )
+
         else:
-            # Fallback reconstruction using matches + NRR (approx)
-            balls = int(matches) * BALLS_PER_MATCH
-            if balls <= 0:
-                rf = 0.0
-                ra = 0.0
-            else:
-                nrr_val = t.get("nrr")
-                if nrr_val is None:
-                    rf = float(balls)
-                    ra = float(balls)
-                else:
-                    delta = float(nrr_val) * float(balls)
-                    rf = float(balls) + delta / 2.0
-                    ra = float(balls) - delta / 2.0
-                    rf = max(0.0, rf)
-                    ra = max(0.0, ra)
+            # Matches started: aggregates must be present for correct NRR simulation.
+            if rf is None or bf is None or ra is None or ba is None:
+                raise ValueError(
+                    f"Cannot build live state for {team_code} because ESPN aggregates are missing. "
+                    f"Need runs_for, balls_for, runs_against, balls_against. "
+                    f"Got: runs_for={t.get('runs_for')}, balls_for={t.get('balls_for')}, "
+                    f"runs_against={t.get('runs_against')}, balls_against={t.get('balls_against')}. "
+                    f"This usually means ESPN page did not include 'For/Against' columns or parsing failed."
+                )
 
             agg = TeamAggregate(
                 team=team_code,
                 runs_for=int(rf),
-                balls_for=int(balls),
+                balls_for=int(bf),
                 runs_against=int(ra),
-                balls_against=int(balls),
+                balls_against=int(ba),
             )
 
         state[team_code] = TeamRow(

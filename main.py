@@ -136,11 +136,12 @@ def _get_live_standings_cached(season: int) -> Dict[str, Any]:
 
 
 def _load_live_state(season: int):
-    """
-    Uses standings to build the simulation state.
-    """
     standings = _get_live_standings_cached(season)
-    return build_state_from_standings(standings)
+    try:
+        return build_state_from_standings(standings)
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 
 
 # -----------------------
