@@ -39,6 +39,8 @@ from ipl_api.thresholds import (
     chase_win_max_balls,
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
 DEFAULT_SEASON = 2026
 
 # -----------------------
@@ -49,6 +51,14 @@ app = FastAPI(
     version="0.1.0",
     description="Backend service for WPL NRR simulation, qualification bounds, Monte Carlo planning, and NRR thresholds",
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 @app.on_event("startup")
