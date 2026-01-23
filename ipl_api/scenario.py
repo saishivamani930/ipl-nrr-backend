@@ -11,6 +11,9 @@ from ipl_api.simulator import simulate_match
 
 ResultType = Literal["WIN", "NR", "TIE"]
 
+# WPL playoffs: Top-3 qualify
+PLAYOFF_SPOTS = 3
+
 
 @dataclass
 class Fixture:
@@ -99,7 +102,7 @@ def _run_one_simulation(
         )
 
         if fx.result == "NR":
-            # NR should NOT change NRR aggregates in IPL (no innings completed).
+            # NR should NOT change NRR aggregates in IPL/WPL (no innings completed).
             # Points-only update is correct.
             _apply_points_only(state, fx.team1, fx.team2, result="NR", winner=None)
             continue
@@ -146,7 +149,7 @@ def monte_carlo_qualification(
     if iterations <= 0:
         raise ValueError("iterations must be > 0")
 
-    top4_count: Dict[str, int] = {t: 0 for t in base_state.keys()}
+    top3_count: Dict[str, int] = {t: 0 for t in base_state.keys()}
     top2_count: Dict[str, int] = {t: 0 for t in base_state.keys()}
     rank_hist: Dict[str, Dict[int, int]] = {t: {} for t in base_state.keys()}
 
@@ -158,21 +161,24 @@ def monte_carlo_qualification(
         for idx, team in enumerate(teams_in_order, start=1):
             rank_hist[team][idx] = rank_hist[team].get(idx, 0) + 1
 
-        for team in teams_in_order[:4]:
-            top4_count[team] += 1
+        for team in teams_in_order[:PLAYOFF_SPOTS]:
+            top3_count[team] += 1
         for team in teams_in_order[:2]:
             top2_count[team] += 1
 
-    top4_prob = {t: top4_count[t] / iterations for t in top4_count}
+    top3_prob = {t: top3_count[t] / iterations for t in top3_count}
     top2_prob = {t: top2_count[t] / iterations for t in top2_count}
 
     return {
         "iterations": iterations,
-        "top4_probability": top4_prob,
+        "top3_probability": top3_prob,
+        # Backward-compatible alias (kept to avoid breaking older frontend)
+        "top4_probability": top3_prob,
         "top2_probability": top2_prob,
         "rank_histogram": rank_hist,
+        "playoff_spots": PLAYOFF_SPOTS,
         "notes": (
             "If fixtures don’t include innings, this is points-only; "
             "NRR remains base-state NRR as tie-breaker."
         ),
-    }
+    }   

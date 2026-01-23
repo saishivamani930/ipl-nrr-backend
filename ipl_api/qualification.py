@@ -4,6 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
+# WPL playoffs: Top-3 qualify
+PLAYOFF_SPOTS = 3
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -75,51 +78,64 @@ def _rank_snapshot_points_nrr(table: List[dict]) -> List[dict]:
     return out
 
 
-def _top4_cutoff_points(points: Dict[str, int]) -> int:
-    # 4th highest points (points-only snapshot)
+def _top3_cutoff_points(points: Dict[str, int]) -> int:
+    # PLAYOFF_SPOTS-th highest points (points-only snapshot). For WPL, this is 3rd highest.
     sorted_pts = sorted(points.values(), reverse=True)
-    if len(sorted_pts) < 4:
+    if not sorted_pts:
         return 0
-    return sorted_pts[3]
+    idx = min(PLAYOFF_SPOTS - 1, len(sorted_pts) - 1)
+    return int(sorted_pts[idx])
+
+
+def _top3_cutoff_points_nrr(table: List[dict]) -> Tuple[int, float, Optional[str]]:
+    """
+    PLAYOFF_SPOTS-th place snapshot considering Points+NRR.
+    Returns (points, nrr, team_name_at_cutoff).
+    """
+    ranked = _rank_snapshot_points_nrr(table)
+    if not ranked:
+        return (0, 0.0, None)
+    idx = min(PLAYOFF_SPOTS - 1, len(ranked) - 1)
+    r = ranked[idx]
+    pts = int(r.get("points", 0))
+    try:
+        nrr = float(r.get("nrr", 0.0))
+    except Exception:
+        nrr = 0.0
+    return (pts, nrr, str(r.get("team", "")))
+
+
+# Backward-compatible helpers (do not remove; other modules may call these)
+def _top4_cutoff_points(points: Dict[str, int]) -> int:
+    # Compatibility name: now returns Top-3 cutoff for WPL.
+    return _top3_cutoff_points(points)
 
 
 def _top4_cutoff_points_nrr(table: List[dict]) -> Tuple[int, float, Optional[str]]:
-    """
-    4th place snapshot considering Points+NRR.
-    Returns (points, nrr, team_name_at_4th).
-    """
-    ranked = _rank_snapshot_points_nrr(table)
-    if len(ranked) < 4:
-        return (0, 0.0, None)
-    r4 = ranked[3]
-    pts = int(r4.get("points", 0))
-    try:
-        nrr = float(r4.get("nrr", 0.0))
-    except Exception:
-        nrr = 0.0
-    return (pts, nrr, str(r4.get("team", "")))
+    # Compatibility name: now returns Top-3 cutoff for WPL.
+    return _top3_cutoff_points_nrr(table)
 
 
 def _is_guaranteed_qualified(team: str, max_pts: Dict[str, int]) -> bool:
     """
     Conservative guarantee check using ONLY points bounds (no NRR).
-    Team is not guaranteed if 4+ teams can finish strictly above its BEST case.
+    Team is not guaranteed if PLAYOFF_SPOTS or more teams can finish strictly above its BEST case.
 
     This remains intentionally conservative. Exact guarantees require scenario enumeration.
     """
     my_max = max_pts[team]
     can_finish_above = sum(1 for t, p in max_pts.items() if t != team and p > my_max)
-    return can_finish_above <= 3
+    return can_finish_above <= (PLAYOFF_SPOTS - 1)
 
 
 def _is_guaranteed_eliminated(team: str, min_pts: Dict[str, int], max_pts: Dict[str, int]) -> bool:
     """
     Conservative elimination check using ONLY points bounds (no NRR).
-    Eliminated if even with best-case for team, 4+ teams are guaranteed to finish above it on points.
+    Eliminated if even with best-case for team, PLAYOFF_SPOTS teams are guaranteed to finish above it on points.
     """
     my_max = max_pts[team]
     strictly_above_me_for_sure = sum(1 for t, p in min_pts.items() if t != team and p > my_max)
-    return strictly_above_me_for_sure >= 4
+    return strictly_above_me_for_sure >= PLAYOFF_SPOTS
 
 
 def evaluate_qualification_bounds(
@@ -132,8 +148,8 @@ def evaluate_qualification_bounds(
       - status (QUALIFIED/ELIMINATED/IN_CONTENTION) using conservative points-bounds only
 
     Adds:
-      - current_rank_snapshot_points_nrr (for accurate current top-4 using NRR)
-      - cutoff snapshots
+      - current_rank_snapshot_points_nrr (for accurate current ranking snapshot using NRR)
+      - cutoff snapshots (Top-3 for WPL)
     """
     points = _current_points(table)
     max_pts = _max_points(points, remaining_fixtures)
@@ -154,8 +170,8 @@ def evaluate_qualification_bounds(
             "status": status,
         }
 
-    cutoff_pts_only = _top4_cutoff_points(points)
-    cutoff_pts_nrr, cutoff_nrr_nrr, cutoff_team = _top4_cutoff_points_nrr(table)
+    cutoff_pts_only = _top3_cutoff_points(points)
+    cutoff_pts_nrr, cutoff_nrr_nrr, cutoff_team = _top3_cutoff_points_nrr(table)
 
     results["_meta"] = {
         "note": (
@@ -163,6 +179,14 @@ def evaluate_qualification_bounds(
             "NRR is used only for the current ranking snapshot/tie-break visibility. "
             "For actual probability-based qualification with NRR, use the Monte Carlo planner."
         ),
+        # New correct keys (Top-3)
+        "current_top3_cutoff_points_snapshot": cutoff_pts_only,
+        "current_top3_cutoff_points_nrr_snapshot": {
+            "points": int(cutoff_pts_nrr),
+            "nrr": float(cutoff_nrr_nrr),
+            "team_at_3rd": cutoff_team,
+        },
+        # Backward-compatible aliases (Top-4 keys kept, but represent Top-3 in WPL)
         "current_top4_cutoff_points_snapshot": cutoff_pts_only,
         "current_top4_cutoff_points_nrr_snapshot": {
             "points": int(cutoff_pts_nrr),
@@ -170,5 +194,6 @@ def evaluate_qualification_bounds(
             "team_at_4th": cutoff_team,
         },
         "current_rank_snapshot_points_nrr": _rank_snapshot_points_nrr(table),
+        "playoff_spots": PLAYOFF_SPOTS,
     }
     return results
